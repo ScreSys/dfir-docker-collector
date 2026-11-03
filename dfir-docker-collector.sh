@@ -1,79 +1,17 @@
 #!/bin/bash
 #
-# DFIR Docker Collector - v7
+# DFIR Docker Collector
 # Forensic collection of running/stopped/paused Docker containers (Docker Engine, GNU userland).
-#
-# ---------------------------------------------------------------------------
-# Changes in v7 (vs v6)
-# ---------------------------------------------------------------------------
-#  LOG COVERAGE
-#   - host access journal also matches SYSLOG_IDENTIFIER=sshd-session (OpenSSH >= 9.8) and sshd-auth
-#     (OpenSSH >= 10.0): SSH logins on recent distributions were missing from journal_access.*.
-#
-# ---------------------------------------------------------------------------
-# Changes in v6 (vs v5)
-# ---------------------------------------------------------------------------
-#  LOG COVERAGE
-#   - container log driver is detected per container (log_driver.txt):
-#       json-file  -> raw json logs (as before)
-#       local      -> local-logs/ is now copied (it was missed by the *.log* glob)
-#       journald   -> container entries are exported from the journal (CONTAINER_ID_FULL=<id>)
-#       none       -> ALERT: the container has no logs
-#       anything else (syslog, gelf, fluentd, awslogs, splunk, ...) -> ALERT: logs are NOT on this host,
-#                     log options (destination) are recorded; the dual-logging cache in local-logs/ is copied if present.
-#     log rotation options (max-size/max-file) are reported because they limit the history.
-#   - host journal: besides docker/containerd/kernel, access activity is exported for ACCESS_DAYS days
-#     (sshd, sudo, su, login, cron/crond/atd, systemd-logind, useradd/passwd/...), as export + readable text.
-#     Journal coverage is checked (persistent vs volatile journal, oldest entry vs requested window, boots list).
-#   - binary login records: raw wtmp*/btmp*/lastlog/faillog/utmp are copied (originals) and decoded
-#     (last/lastb/utmpdump per file, lastlog); empty/missing wtmp/btmp is reported (possible log clearing).
-#   - application logs: LAST check of each container looks for well-known applications (web servers,
-#     databases, app servers, brokers, CI, proxies, ...) and copies their log + config folders with docker cp
-#     (works on bind mounts/volumes and with the containerd image store, which has no UpperDir).
-#     Web content (webroots/webapps) is copied after, within a global per-container size cap.
-#     Log-like files found inside bind mounts/volumes are copied from the host side as well.
-#     Everything detected is listed in containers/<name>/apps/apps_detected.tsv. Disable with --no-apps.
-#
-# ---------------------------------------------------------------------------
-# Changes in v5 (vs v4)
-# ---------------------------------------------------------------------------
-#  SECURITY
-#   - usernames/homes read from the (untrusted) container /etc/passwd are sanitized: no more
-#     path traversal / arbitrary file write as root on the host.
-#   - trusted PATH, LD_* variables unset; no "sudo -E" needed.
-#   - docker exec fallback is OFF by default (--allow-exec to enable, always logged).
-#  EVIDENCE INTEGRITY
-#   - var_log plaintext is deleted ONLY if the tar.gz was written and verified.
-#   - cleanup touches ONLY empty files/dirs inside the tool's own ERROR_LOG folders
-#     (empty directories copied from containers are evidence and are kept).
-#   - numeric UID/GID everywhere (find %U/%G, tar --numeric-owner, docker cp -a); host passwd is
-#     never used to resolve container UIDs.
-#   - manifest uses RELATIVE paths (verify with: cd <dir> && sha256sum -c SHA256SUMS.txt),
-#     is sorted, and the log-flush race (sleep 1) is replaced by a proper wait on tee.
-#   - examiner = real user ($SUDO_USER), script SHA256, bash/kernel/docker versions in case metadata.
-#   - every docker command is logged with UTC timestamp in actions.log (to discount
-#     collector-generated events in the analysis).
-#  COVERAGE
-#   - volatile data (/proc, network) of ALL containers is collected first (phase 2), static data later (phase 3).
-#   - paused/restarting containers with a live PID are now processed.
-#   - UpperDir is archived (size-capped) and not only listed; bind-mount/volume timelines added.
-#   - more container artifacts (ld.so.preload, /tmp, /dev/shm, Alpine cron/ash_history, sudoers, ...),
-#     more host artifacts (dmesg, raw audit, docker.sock perms, docker group, time sync, ...).
-#   - risk flags (caps, pid/ipc/net host, unconfined, sensitive mounts) + triage_alerts.txt.
-#   - optional dump of suspicious memory regions (rwx / anonymous-exec / memfd) with --dump-mem.
-#   - docker events truncation check; find timeouts are reported; logs keep stdout+stderr in one file.
-#   - non-interactive mode (flags), optional archive + age encryption, GNU/bash version checks.
-#   - per-container output lives in <BASE>/containers/<name>/ (no clash with HOST_ARTIFACTS/ERROR_LOG names).
 #
 # ---------------------------------------------------------------------------
 # Usage
 # ---------------------------------------------------------------------------
 #   Interactive:
-#     sudo OUT_ROOT=/mnt/evidence ./dfir-docker-collector-v7.sh
+#     sudo OUT_ROOT=/mnt/evidence ./dfir-docker-collector.sh
 #   Non-interactive:
-#     sudo ./dfir-docker-collector-v7.sh --out /mnt/evidence --case-id IR-2026-042 --all --yes --archive
-#     sudo ./dfir-docker-collector-v7.sh --out /mnt/evidence --include web1,db1 --yes
-#     sudo ./dfir-docker-collector-v7.sh --out /mnt/evidence --exclude monitoring --yes
+#     sudo ./dfir-docker-collector.sh --out /mnt/evidence --case-id IR-2026-042 --all --yes --archive
+#     sudo ./dfir-docker-collector.sh --out /mnt/evidence --include web1,db1 --yes
+#     sudo ./dfir-docker-collector.sh --out /mnt/evidence --exclude monitoring --yes
 #
 # Options:
 #   --out DIR         evidence destination (same as OUT_ROOT)
@@ -95,7 +33,7 @@
 #   ALLOW_EXEC[0]  DUMP_MEM[0]  ARCHIVE[0]  AGE_RECIPIENT  TRUSTED_PATH
 #
 # Note: if the file has Windows line endings (CRLF) run:
-#   sed -i 's/\r$//' dfir-docker-collector-v7.sh
+#   sed -i 's/\r$//' dfir-docker-collector-v.sh
 #
 # ---------------------------------------------------------------------------
 
@@ -107,7 +45,7 @@ export LC_ALL=C
 export PATH="${TRUSTED_PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}"
 unset LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT 2>/dev/null
 
-SCRIPT_VERSION="7"
+SCRIPT_VERSION="1"
 SCRIPT_PATH=$(readlink -f "$0" 2>/dev/null || echo "$0")
 
 # --- Configuration -----------------------------------------
@@ -261,14 +199,20 @@ space_ok() { [ "$(free_mb)" -ge "$SPACE_FLOOR_MB" ] 2>/dev/null; }
 safe_name() { printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_' | cut -c1-64; }
 
 # resolve names/IDs to FULL container IDs (containers only, never images/volumes).
+# $2 = 1 (interactive prompts only): a number 1..N is the row of the container list shown to the operator.
 normalize_ids() {
-    local raw="$1" item full
+    local raw="$1" allow_index="${2:-0}" item full
     local -a items
     IFS=',' read -ra items <<< "$raw"
     for item in "${items[@]}"; do
         item=$(echo "$item" | tr -d '[:space:]')
         [ -z "$item" ] && continue
         case "$item" in -*) echo "WARNING: invalid name ignored -> $item" >&2; continue ;; esac
+        if [ "$allow_index" -eq 1 ] && [[ "$item" =~ ^[0-9]+$ ]] \
+           && [ "$((10#$item))" -ge 1 ] && [ "$((10#$item))" -le "${#ALL_ID_ARR[@]}" ]; then
+            echo "${ALL_ID_ARR[$((10#$item - 1))]}"
+            continue
+        fi
         if full=$(dk container inspect --format '{{.Id}}' "$item" 2>/dev/null); then
             echo "$full"
         else
@@ -770,11 +714,27 @@ Host login/access evidence: HOST_ARTIFACTS/journal_access.* , HOST_ARTIFACTS/raw
 Application logs/config/web content: containers/<name>/apps/<app>/ ; apps_detected.tsv lists every path found (class app path status size_kb).
 EOF
 
-ALL_IDS=$(dk ps -aq --no-trunc)
+# one docker ps call: the IDs and the table shown to the operator come from the same snapshot (same order).
+PS_TABLE=$(dk ps -a --no-trunc --format '{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}')
+ALL_IDS=$(cut -f1 <<< "$PS_TABLE" | sed '/^$/d')
 if [ -z "$ALL_IDS" ]; then
     echo "No containers on this host. Exiting."
     exit 1
 fi
+mapfile -t ALL_ID_ARR <<< "$ALL_IDS"
+
+# list every container (running AND stopped: both are evidence) before asking what to collect.
+# The row number (#) can be used in the interactive prompts instead of names/IDs.
+echo ""
+echo "--- Containers on this host (${#ALL_ID_ARR[@]} total, $(awk -F'\t' '$4 ~ /^Up/' <<< "$PS_TABLE" | wc -l) running/paused) ---"
+printf '%3s  %-12s  %-24s  %-30s  %-26s  %s\n' "#" "ID" "NAME" "IMAGE" "STATUS" "PORTS"
+i=0
+while IFS=$'\t' read -r id name image status ports; do
+    [ -n "$id" ] || continue
+    i=$((i+1))
+    printf '%3s  %-12s  %-24.24s  %-30.30s  %-26.26s  %s\n' "$i" "${id:0:12}" "$name" "$image" "$status" "$ports"
+done <<< "$PS_TABLE"
+echo ""
 
 # --- Container selection ---
 TARGET_LIST=""
@@ -799,8 +759,8 @@ else
     if [[ "$ANS_ALL" =~ ^[Yy] ]]; then
         ask ANS_EXCL "Exclude some? [y/N]: " "N"
         if [[ "$ANS_EXCL" =~ ^[Yy] ]]; then
-            ask EXCLUDE_RAW "IDs/names to EXCLUDE (comma separated): " ""
-            EXCLUDE_IDS=$(normalize_ids "$EXCLUDE_RAW")
+            ask EXCLUDE_RAW "Numbers (#), names or IDs to EXCLUDE (comma separated): " ""
+            EXCLUDE_IDS=$(normalize_ids "$EXCLUDE_RAW" 1)
             SELECTION_MODE="all except: ${EXCLUDE_RAW}"
             TARGET_LIST=$(select_all_except "$EXCLUDE_IDS")
         else
@@ -808,13 +768,14 @@ else
             SELECTION_MODE="all containers"
         fi
     else
-        ask INCLUDE_RAW "IDs/names to COLLECT (comma separated): " ""
-        TARGET_LIST=$(normalize_ids "$INCLUDE_RAW")
+        ask INCLUDE_RAW "Numbers (#), names or IDs to COLLECT (comma separated): " ""
+        TARGET_LIST=$(normalize_ids "$INCLUDE_RAW" 1)
         SELECTION_MODE="explicit list: ${INCLUDE_RAW}"
     fi
 fi
 
-TARGET_LIST=$(echo "$TARGET_LIST" | sed '/^$/d')
+# drop empty lines and duplicates (e.g. "1,web1" pointing to the same container), keeping the order.
+TARGET_LIST=$(echo "$TARGET_LIST" | sed '/^$/d' | awk '!seen[$0]++')
 if [ -z "$TARGET_LIST" ]; then
     echo "ERROR: no valid container selected. Exiting."
     exit 1

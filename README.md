@@ -80,13 +80,15 @@ Everything it does is logged, and the result is a hashed, verifiable evidence se
 
 ## Quick start
 
-1. Copy the script to the host and make it executable:
+1. **Take a snapshot first**, if the host is a virtual machine or a cloud instance. The script runs on a live system and inevitably changes it (files written, access times, Docker events, page cache): a snapshot taken *before* copying the script preserves the original state, lets you image the disk later and gives you a fallback if something goes wrong. Prefer a snapshot that includes memory (VMware, Hyper-V, Proxmox, ...), which also preserves RAM; cloud disk snapshots (EBS, Azure managed disks, GCP persistent disks) preserve the disks only. Take it with the machine running: do not stop or reboot it, or the volatile data is lost.
+
+2. Copy the script to the host and make it executable:
 
    ```bash
    chmod +x dfir-docker-collector.sh
    ```
 
-2. Write the output to an **external or dedicated volume**, not to the disk under analysis. The volume should be formatted with a Linux filesystem (ext4, xfs): on exFAT/NTFS, ownership, permissions and symlinks of the copied files are lost.
+3. Write the output to an **external or dedicated volume**, not to the disk under analysis. The volume should be formatted with a Linux filesystem (ext4, xfs): on exFAT/NTFS, ownership, permissions and symlinks of the copied files are lost.
 
 ### Interactive mode
 
@@ -94,7 +96,7 @@ Everything it does is logged, and the result is a hashed, verifiable evidence se
 sudo OUT_ROOT=/mnt/evidence ./dfir-docker-collector.sh
 ```
 
-The script asks for a case ID, which containers to collect (all, all except some, or an explicit list) and a final confirmation. It also asks before continuing when no destination is given (fallback to `/tmp`) or when free space is low.
+The script asks for a case ID, then shows a numbered table of every container on the host (running and stopped: ID, name, image, status, ports) and asks which ones to collect (all, all except some, or an explicit list) and a final confirmation. In the prompts you can use the row numbers from the table (`1,3`), names or IDs. It also asks before continuing when no destination is given (fallback to `/tmp`) or when free space is low.
 
 ### Non-interactive mode
 
