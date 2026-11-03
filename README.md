@@ -1,5 +1,9 @@
 # DFIR Docker Collector
 
+Nowadays more and more applications run in containers. They are fast to deploy, portable across environments and easy to scale. They also isolate applications from each other and from the host, so many organizations treat them as part of their security strategy.
+
+For incident responders, the same features are a problem. A single host can run dozens of containers, often short-lived and built on minimal images with no tools inside. Entering each container one by one to collect evidence takes a lot of time, can alter the evidence itself, and the logs are often scattered between the container, its volumes and the host.
+
 A single-file Bash script for the **forensic collection of Docker containers** (running, paused, restarting or stopped) on a Linux host running Docker Engine.
 
 The target of the collection is the **containers**: their processes, network state, writable layer, files, logs and applications. The script also records the **host context a container investigation needs** (Docker events, daemon configuration and journal, runtime sockets, kernel state shared with the containers) and a set of host access records.
@@ -419,3 +423,7 @@ Anyone who wants to contribute, suggest a change or modify something can write t
 ## Disclaimer
 
 Provided as is, without warranty. Test it in a lab before using it in a real incident, and make sure you have the authority and legal basis to collect the data it gathers.
+
+---
+
+More information is available at **[nicolascremin.com/dfir/dfir-docker-collector](https://nicolascremin.com/dfir/dfir-docker-collector/)**.
